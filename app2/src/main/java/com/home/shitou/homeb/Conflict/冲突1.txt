@@ -1,0 +1,144 @@
+问题描述：SwipeRefreshLayout和android-Ultra-Pull-To-Refresh嵌套ScrollView、ListView、GrdiView、RecyclerView时，
+页面往上滑再往下滑时还没滑到顶部就触发了下拉刷新。
+
+SwipeRefreshLayout嵌套上下滑动View时滑动冲突
+
+解决SwipeRefreshLayout冲突方案，我们来看看SwipeRefreshLayout源码发现一个方法canChildScrollUp()，
+意思是子View可以向上滚动吗，当返回true的时候SwipeRefreshLayout就不能被下拉刷新了，
+细细分析了代码之后发现这里只对子View做了判断，而我们实际开发中往往会在SwipeRefreshLayout中再嵌套一个ViewGroup，
+再在这个ViewGroup中放一个ScrollView，这时候我们说的问题就出现了。
+　　
+canChildScrollUp()方法源码
+
+public boolean canChildScrollUp() {
+    if (android.os.Build.VERSION.SDK_INT < 14) {
+        if (mTarget instanceof AbsListView) {
+            final AbsListView absListView = (AbsListView) mTarget;
+            return absListView.getChildCount() > 0 && (absListView.getFirstVisiblePosition() > 0 || absListView.getChildAt(0).getTop() < absListView.getPaddingTop());
+        } else {
+            return ViewCompat.canScrollVertically(mTarget, -1) || mTarget.getScrollY() > 0;
+        }
+    } else {
+        return ViewCompat.canScrollVertically(mTarget, -1);
+    }
+}
+所以我们需要重写SwipeRefreshLayout的canChildScrollUp()方法，完整代码如下：
+
+public class MySwipeRefreshLayout extends android.support.v4.widget.SwipeRefreshLayout {
+
+    private boolean canChildScrollUp;
+
+    public MySwipeRefreshLayout(Context context) {
+        super(context);
+    }
+
+    public MySwipeRefreshLayout(Context context, AttributeSet attrs) {
+        super(context, attrs);
+    }
+
+    public void setCanChildScrollUp(boolean canChildScrollUp) {
+        this.canChildScrollUp = canChildScrollUp;
+    }
+
+    @Override
+    public boolean canChildScrollUp() {
+        return canChildScrollUp;
+    }
+}
+　　当我们监听到SwipeRefreshLayout中可以上下滑动的View向上滚动了就调用swipeRefreshLayout.setChildScrollUp(true)，
+当我们监听到SwipeRefreshLayout中可以上下滑动的View向下滚动并且已经到顶部了，就调用swipeRefreshLayout.
+setChildScrollUp(false)。
+　　但是我们每次嵌套都需要对的子View的滑动做判断，所以我们动态的指定SwipeRefreshLayout中的contentView，
+并且使用SwipeRefreshLayout的canChildScrollU()方法中的代码来判断，简直完美啊：
+
+public class MySwipeRefreshLayout extends android.support.v4.widget.SwipeRefreshLayout {
+
+    private View contentView;
+
+    public MySwipeRefreshLayout(Context context) {
+        super(context);
+    }
+
+    public MySwipeRefreshLayout(Context context, AttributeSet attrs) {
+        super(context, attrs);
+    }
+
+    public void setContentView(View contentView) {
+        this.contentView = contentView;
+    }
+
+    @Override
+    public boolean canChildScrollUp() {
+        if (android.os.Build.VERSION.SDK_INT < 14) {
+            if (contentView instanceof AbsListView) {
+                final AbsListView absListView = (AbsListView) contentView;
+                return absListView.getChildCount() > 0 && (absListView.getFirstVisiblePosition() > 0 || absListView.getChildAt(0).getTop() < absListView.getPaddingTop());
+            } else {
+                return ViewCompat.canScrollVertically(contentView, -1) || contentView.getScrollY() > 0;
+            }
+        } else {
+            return ViewCompat.canScrollVertically(contentView, -1);
+        }
+    }
+}
+和android-Ultra-Pull-To-Refresh嵌套上下滑动View时滑动冲突
+
+　　其实PtrFramLayout的刷新接口PtrHandler提供了一个方法checkCanDoRefresh(...)来检查是否允许刷新，
+我们只需要在这里做判断返回true和false就OK了。
+　　然而我们的作者liaohuqiu同学也是想的非常周到，提供了一个PtrDefaultHandler类，
+实现了和SwipeRefreshLayout同样的判断，so看到这里的同学肯定知道怎么改了吧，我们先来看看PtrDefaultHandler源码：
+
+public abstract class PtrDefaultHandler implements PtrHandler {
+
+    public static boolean canChildScrollUp(View view) {
+        if (android.os.Build.VERSION.SDK_INT < 14) {
+            if (view instanceof AbsListView) {
+                final AbsListView absListView = (AbsListView) view;
+                return absListView.getChildCount() > 0
+                        && (absListView.getFirstVisiblePosition() > 0 || absListView.getChildAt(0)
+                        .getTop() < absListView.getPaddingTop());
+            } else {
+                return view.getScrollY() > 0;
+            }
+        } else {
+            return view.canScrollVertically(-1);
+        }
+    }
+
+    /**
+     * Default implement for check can perform pull to refresh
+     *
+     * @param frame
+     * @param content
+     * @param header
+     * @return
+     */
+    public static boolean checkContentCanBePulledDown(PtrFrameLayout frame, View content, View header) {
+        return !canChildScrollUp(content);
+    }
+
+    @Override
+    public boolean checkCanDoRefresh(PtrFrameLayout frame, View content, View header) {
+        return checkContentCanBePulledDown(frame, content, header);
+    }
+}
+
+　　所以我们在使用刷新接口的时候使用PtrDefaultHandler就好了，重写checkCanDoRefresh()方法：
+
+private ScrollView scrollView;
+
+...
+
+private PtrDefaultHandler defaultHandler = new PtrDefaultHandler() {
+
+    @Override
+    public boolean checkCanDoRefresh(PtrFrameLayout frame, View content, View header) {
+        return !canChildScrollUp(scrollView);
+    }
+
+    @Override
+    public void onRefreshBegin(PtrFrameLayout frame) {
+        // 做刷新的操作
+        ...
+    }
+};
